@@ -19,7 +19,15 @@ export async function submitRegistration(input: {
     throw new Error('Event not found');
   }
 
-  const duplicate = await prisma.registration.findUnique({
+  if (event.status !== 'REGISTRATION_OPEN') {
+    throw new Error(`Event is not accepting registrations right now (${event.status}).`);
+  }
+
+  if (event.registrationDeadline && new Date() > new Date(event.registrationDeadline)) {
+    throw new Error('Registration deadline has passed.');
+  }
+
+  const existing = await prisma.registration.findUnique({
     where: {
       eventId_discordUserId: {
         eventId: input.eventId,
@@ -28,8 +36,32 @@ export async function submitRegistration(input: {
     },
   });
 
-  if (duplicate) {
+  if (existing) {
     throw new Error('This user is already registered for this event.');
+  }
+
+  const approvedCount = await prisma.registration.count({
+    where: {
+      eventId: input.eventId,
+      status: 'APPROVED',
+    },
+  });
+
+  let status: 'UNDER_REVIEW' | 'APPROVED' | 'WAITLISTED' = event.approvalRequired ? 'UNDER_REVIEW' : 'APPROVED';
+  let waitlistPosition: number | null = null;
+
+  if (event.playerCapacity > 0 && approvedCount >= event.playerCapacity) {
+    if (!event.waitlistEnabled) {
+      throw new Error('This event is full and waitlisting is disabled.');
+    }
+
+    status = 'WAITLISTED';
+    waitlistPosition = (await prisma.registration.count({
+      where: {
+        eventId: input.eventId,
+        status: 'WAITLISTED',
+      },
+    })) + 1;
   }
 
   const registration = await prisma.registration.create({
@@ -45,7 +77,8 @@ export async function submitRegistration(input: {
       minecraftEdition: input.minecraftEdition ?? 'Java',
       additionalInformation: input.additionalInformation ?? null,
       teamId: input.teamId ?? null,
-      status: event.approvalRequired ? 'UNDER_REVIEW' : 'APPROVED',
+      status,
+      waitlistPosition,
     },
   });
 
@@ -60,6 +93,7 @@ export async function submitRegistration(input: {
       newState: registration.status,
       metadata: {
         registrationId: registration.registrationId,
+        waitlistPosition,
       },
     },
   });
@@ -68,6 +102,7 @@ export async function submitRegistration(input: {
     eventId: input.eventId,
     registrationId: registration.registrationId,
     discordUserId: input.discordUserId,
+    status: registration.status,
   });
 
   return registration;
@@ -78,6 +113,23 @@ export async function approveRegistration(registrationId: string, actorDiscordId
 
   if (!current) {
     throw new Error('Registration not found.');
+  }
+
+  const event = await prisma.event.findUnique({ where: { id: current.eventId } });
+
+  if (!event) {
+    throw new Error('Event not found.');
+  }
+
+  const approvedCount = await prisma.registration.count({
+    where: {
+      eventId: current.eventId,
+      status: 'APPROVED',
+    },
+  });
+
+  if (event.playerCapacity > 0 && approvedCount >= event.playerCapacity && current.status !== 'APPROVED') {
+    throw new Error('This event has reached capacity and cannot accept more approved registrations.');
   }
 
   if (current.status === 'APPROVED') {
@@ -109,57 +161,4 @@ export async function approveRegistration(registrationId: string, actorDiscordId
   });
 
   return updated;
-}
-
-export async function rejectRegistration(registrationId: string, actorDiscordId: string, reason: string) {
-  const current = await prisma.registration.findUnique({ where: { id: registrationId } });
-
-  if (!current) {
-    throw new Error('Registration not found.');
-  }
-
-  const updated = await prisma.registration.update({
-    where: { id: registrationId },
-    data: {
-      status: 'REJECTED',
-      rejectionReason: reason,
-    },
-  });
-
-  await prisma.auditLog.create({
-    data: {
-      registrationId: updated.id,
-      eventId: updated.eventId,
-      actorDiscordId: actorDiscordId,
-      actorType: 'STAFF',
-      action: 'REGISTRATION_REJECTED',
-      previousState: current.status,
-      newState: 'REJECTED',
-      metadata: { reason },
-    },
-  });
-
-  return updated;
-}
-
-export async function getRegistrationByUser(eventId: string, discordUserId: string) {
-  return prisma.registration.findUnique({
-    where: {
-      eventId_discordUserId: {
-        eventId,
-        discordUserId,
-      },
-    },
-  });
-}
-
-export async function getRegistrationById(registrationId: string) {
-  return prisma.registration.findUnique({ where: { id: registrationId } });
-}
-
-export async function listRegistrations(eventId: string) {
-  return prisma.registration.findMany({
-    where: { eventId },
-    orderBy: { createdAt: 'asc' },
-  });
 }

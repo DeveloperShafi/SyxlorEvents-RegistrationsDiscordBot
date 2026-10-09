@@ -1,14 +1,82 @@
-import {
-  ChatInputCommandInteraction,
-  SlashCommandBuilder,
-  EmbedBuilder,
-  PermissionFlagsBits,
-} from 'discord.js';
+import { SlashCommandBuilder, ChatInputCommandInteraction } from 'discord.js';
+import { prisma } from '../database/prisma.js';
 import { findEventByNameOrPublicId, openEvent, closeEvent } from '../services/eventService.js';
-import { approveRegistration, rejectRegistration } from '../services/registrationService.js';
 import { ensureStaffAccess } from '../services/staffService.js';
+import { approveRegistration, rejectRegistration, submitRegistration } from '../services/registrationService.js';
+import { exportRegistrations } from '../services/exportService.js';
 
-export const staffCommands = [
+export const eventStatusCommand = {
+  data: new SlashCommandBuilder()
+    .setName('event-status')
+    .setDescription('Check the current status of an event.')
+    .addStringOption((option) =>
+      option.setName('event').setDescription('Event name or public ID').setRequired(true)
+    ),
+  async execute(interaction: ChatInputCommandInteraction) {
+    if (!(await ensureStaffAccess(interaction))) {
+      await interaction.reply({ content: 'You do not have permission to use this command.', ephemeral: true });
+      return;
+    }
+
+    const event = await findEventByNameOrPublicId(interaction.options.getString('event', true));
+
+    if (!event) {
+      await interaction.reply({ content: 'Event not found.', ephemeral: true });
+      return;
+    }
+
+    const approvedCount = await prisma.registration.count({
+      where: { eventId: event.id, status: 'APPROVED' },
+    });
+
+    await interaction.reply({
+      content: `Event: ${event.name}\nStatus: ${event.status}\nCapacity: ${approvedCount}/${event.playerCapacity || '∞'}\nWaitlist: ${event.waitlistEnabled ? 'Enabled' : 'Disabled'}`,
+      ephemeral: true,
+    });
+  },
+};
+
+export const exportRegistrationsCommand = {
+  data: new SlashCommandBuilder()
+    .setName('export-registrations')
+    .setDescription('Export event registrations.')
+    .addStringOption((option) =>
+      option.setName('event').setDescription('Event name or public ID').setRequired(true)
+    )
+    .addStringOption((option) =>
+      option
+        .setName('format')
+        .setDescription('Export format')
+        .setRequired(true)
+        .addChoices(
+          { name: 'CSV', value: 'csv' },
+          { name: 'JSON', value: 'json' },
+          { name: 'Markdown', value: 'markdown' }
+        )
+    ),
+  async execute(interaction: ChatInputCommandInteraction) {
+    if (!(await ensureStaffAccess(interaction))) {
+      await interaction.reply({ content: 'You do not have permission to use this command.', ephemeral: true });
+      return;
+    }
+
+    const event = await findEventByNameOrPublicId(interaction.options.getString('event', true));
+    const format = interaction.options.getString('format', true) as 'csv' | 'json' | 'markdown';
+
+    if (!event) {
+      await interaction.reply({ content: 'Event not found.', ephemeral: true });
+      return;
+    }
+
+    const csv = await exportRegistrations(event.id, format);
+    await interaction.reply({
+      content: `Export generated for ${event.name}:\n\n\`\`\`\n${csv.slice(0, 1800)}\n\`\`\``,
+      ephemeral: true,
+    });
+  },
+};
+
+export const adminControlCommands = [
   {
     data: new SlashCommandBuilder()
       .setName('event-open')
@@ -22,19 +90,14 @@ export const staffCommands = [
         return;
       }
 
-      const search = interaction.options.getString('event', true);
-      const event = await findEventByNameOrPublicId(search);
-
+      const event = await findEventByNameOrPublicId(interaction.options.getString('event', true));
       if (!event) {
         await interaction.reply({ content: 'Event not found.', ephemeral: true });
         return;
       }
 
       await openEvent(event.id);
-      await interaction.reply({
-        content: `Registration for ${event.name} is now open.`,
-        ephemeral: true,
-      });
+      await interaction.reply({ content: `Registration for ${event.name} is now open.`, ephemeral: true });
     },
   },
   {
@@ -50,19 +113,14 @@ export const staffCommands = [
         return;
       }
 
-      const search = interaction.options.getString('event', true);
-      const event = await findEventByNameOrPublicId(search);
-
+      const event = await findEventByNameOrPublicId(interaction.options.getString('event', true));
       if (!event) {
         await interaction.reply({ content: 'Event not found.', ephemeral: true });
         return;
       }
 
       await closeEvent(event.id);
-      await interaction.reply({
-        content: `Registration for ${event.name} is now closed.`,
-        ephemeral: true,
-      });
+      await interaction.reply({ content: `Registration for ${event.name} is now closed.`, ephemeral: true });
     },
   },
   {
@@ -78,11 +136,13 @@ export const staffCommands = [
         return;
       }
 
-      const registrationId = interaction.options.getString('registration-id', true);
-      const registration = await approveRegistration(registrationId, interaction.user.id);
+      const registration = await approveRegistration(
+        interaction.options.getString('registration-id', true),
+        interaction.user.id
+      );
 
       await interaction.reply({
-        content: `Registration ${registration.registrationId} approved.`,
+        content: `Registration ${registration.registrationId} was approved.`,
         ephemeral: true,
       });
     },
@@ -90,7 +150,7 @@ export const staffCommands = [
   {
     data: new SlashCommandBuilder()
       .setName('reject-registration')
-      .setDescription('Reject a pending registration.')
+      .setDescription('Reject a registration.')
       .addStringOption((option) =>
         option.setName('registration-id').setDescription('Registration ID').setRequired(true)
       )
@@ -103,14 +163,18 @@ export const staffCommands = [
         return;
       }
 
-      const registrationId = interaction.options.getString('registration-id', true);
-      const reason = interaction.options.getString('reason', true);
-      const registration = await rejectRegistration(registrationId, interaction.user.id, reason);
+      const registration = await rejectRegistration(
+        interaction.options.getString('registration-id', true),
+        interaction.user.id,
+        interaction.options.getString('reason', true)
+      );
 
       await interaction.reply({
-        content: `Registration ${registration.registrationId} rejected.`,
+        content: `Registration ${registration.registrationId} was rejected.`,
         ephemeral: true,
       });
     },
   },
+  eventStatusCommand,
+  exportRegistrationsCommand,
 ];

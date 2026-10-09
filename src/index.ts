@@ -5,6 +5,7 @@ import { helpseCommand } from '../commands/helpse.js';
 import { eventCreateCommand, eventListCommand } from '../commands/eventAdmin.js';
 import { registerCommand } from '../commands/register.js';
 import { myRegistrationCommand } from '../commands/myRegistration.js';
+import { adminControlCommands } from '../commands/admin.js';
 import { handleInteraction } from '../handlers/modalHandler.js';
 
 export class SyxlorClient extends Client {
@@ -20,6 +21,10 @@ export class SyxlorClient extends Client {
     this.commands.set(eventListCommand.data.name, eventListCommand);
     this.commands.set(registerCommand.data.name, registerCommand);
     this.commands.set(myRegistrationCommand.data.name, myRegistrationCommand);
+
+    for (const command of adminControlCommands) {
+      this.commands.set(command.data.name, command);
+    }
   }
 
   async start() {
@@ -41,10 +46,12 @@ export class SyxlorClient extends Client {
           await command.execute(interaction);
         } catch (error) {
           logger.error('Command failed', { error, command: interaction.commandName });
-          await interaction.reply({
-            content: 'An error occurred while processing that command.',
-            ephemeral: true,
-          }).catch(() => undefined);
+          await interaction
+            .reply({
+              content: 'An error occurred while processing that command.',
+              ephemeral: true,
+            })
+            .catch(() => undefined);
         }
       }
 
@@ -61,7 +68,6 @@ export class SyxlorClient extends Client {
 
     const rest = new REST({ version: '10' }).setToken(discordToken);
     const guildId = env.DISCORD_GUILD_ID || undefined;
-
     const commandData = [...this.commands.values()].map((command) => command.data.toJSON());
 
     if (guildId) {
