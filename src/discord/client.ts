@@ -1,52 +1,86 @@
-import { Interaction, ModalSubmitInteraction } from 'discord.js';
-import { prisma } from '../database/prisma.js';
-import { submitRegistration } from '../services/registrationService.js';
+import { Client, Collection, GatewayIntentBits, REST, Routes, SlashCommandBuilder } from 'discord.js';
+import { env, requireEnv } from '../config/env.js';
+import { logger } from '../lib/logger.js';
+import { helpseCommand } from '../commands/helpse.js';
+import { eventCreateCommand, eventListCommand } from '../commands/eventAdmin.js';
+import { registerCommand } from '../commands/register.js';
+import { myRegistrationCommand } from '../commands/myRegistration.js';
+import { adminControlCommands } from '../commands/admin.js';
+import { eventInfoCommand } from '../commands/eventInfo.js';
+import { teamCreateCommand, teamListCommand } from '../commands/team.js';
+import { handleInteraction } from '../handlers/modalHandler.js';
 
-export async function handleModalSubmit(interaction: ModalSubmitInteraction): Promise<void> {
-  if (!interaction.customId.startsWith('register:')) {
-    return;
-  }
+export class SyxlorClient extends Client {
+  public commands = new Collection<string, { data: SlashCommandBuilder; execute: (interaction: any) => Promise<void> }>();
 
-  const eventId = interaction.customId.replace('register:', '');
-  const event = await prisma.event.findUnique({ where: { id: eventId } });
-
-  if (!event) {
-    await interaction.reply({ content: 'This event could not be found.', ephemeral: true });
-    return;
-  }
-
-  const minecraftUsername = interaction.fields.getTextInputValue('minecraftUsername');
-  const minecraftVersion = interaction.fields.getTextInputValue('minecraftVersion');
-  const client = interaction.fields.getTextInputValue('client');
-  const modLoader = interaction.fields.getTextInputValue('modLoader');
-  const minecraftEdition = interaction.fields.getTextInputValue('minecraftEdition');
-  const additionalInformation = interaction.fields.getTextInputValue('additionalInformation') || null;
-
-  try {
-    const registration = await submitRegistration({
-      eventId,
-      discordUserId: interaction.user.id,
-      discordUsername: interaction.user.tag,
-      minecraftUsername,
-      minecraftVersion,
-      client,
-      modLoader,
-      minecraftEdition,
-      additionalInformation,
+  constructor() {
+    super({
+      intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages],
     });
 
-    await interaction.reply({
-      content: `Registration submitted successfully for ${event.name}. Your registration ID is ${registration.registrationId}.`,
-      ephemeral: true,
-    });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'Unknown validation error.';
-    await interaction.reply({ content: `Registration failed: ${message}`, ephemeral: true });
-  }
-}
+    this.commands.set(helpseCommand.data.name, helpseCommand);
+    this.commands.set(eventCreateCommand.data.name, eventCreateCommand);
+    this.commands.set(eventListCommand.data.name, eventListCommand);
+    this.commands.set(registerCommand.data.name, registerCommand);
+    this.commands.set(myRegistrationCommand.data.name, myRegistrationCommand);
+    this.commands.set(eventInfoCommand.data.name, eventInfoCommand);
+    this.commands.set(teamCreateCommand.data.name, teamCreateCommand);
+    this.commands.set(teamListCommand.data.name, teamListCommand);
 
-export async function handleInteraction(interaction: Interaction): Promise<void> {
-  if (interaction.isModalSubmit()) {
-    await handleModalSubmit(interaction);
+    for (const command of adminControlCommands) {
+      this.commands.set(command.data.name, command);
+    }
+  }
+
+  async start() {
+    const discordToken = requireEnv('DISCORD_TOKEN');
+    const clientId = requireEnv('DISCORD_CLIENT_ID');
+
+    this.on('ready', () => {
+      logger.info('Discord client ready', { user: this.user?.tag });
+    });
+
+    this.on('interactionCreate', async (interaction) => {
+      if (interaction.isChatInputCommand()) {
+        const command = this.commands.get(interaction.commandName);
+        if (!command) {
+          return;
+        }
+
+        try {
+          await command.execute(interaction);
+        } catch (error) {
+          logger.error('Command failed', { error, command: interaction.commandName });
+          await interaction
+            .reply({
+              content: 'An error occurred while processing that command.',
+              ephemeral: true,
+            })
+            .catch(() => undefined);
+        }
+      }
+
+      if (interaction.isModalSubmit()) {
+        try {
+          await handleInteraction(interaction);
+        } catch (error) {
+          logger.error('Modal interaction failed', { error });
+        }
+      }
+    });
+
+    await this.login(discordToken);
+
+    const rest = new REST({ version: '10' }).setToken(discordToken);
+    const guildId = env.DISCORD_GUILD_ID || undefined;
+    const commandData = [...this.commands.values()].map((command) => command.data.toJSON());
+
+    if (guildId) {
+      await rest.put(Routes.applicationGuildCommands(clientId, guildId), { body: commandData });
+    } else {
+      await rest.put(Routes.applicationCommands(clientId), { body: commandData });
+    }
+
+    logger.info('Discord slash commands deployed');
   }
 }
