@@ -1,0 +1,196 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum EventStatus {
+  DRAFT
+  REGISTRATION_OPEN
+  REGISTRATION_CLOSED
+  CHECK_IN
+  LOCKED
+  LIVE
+  FINISHED
+  ARCHIVED
+}
+
+enum EventType {
+  SOLO
+  DUO
+  TRIO
+  SQUAD
+  TEAM
+  TOURNAMENT
+  BATTLE_ROYALE
+  CUSTOM
+}
+
+enum RegistrationStatus {
+  PENDING
+  UNDER_REVIEW
+  APPROVED
+  REJECTED
+  CANCELLED
+  WAITLISTED
+}
+
+enum AuditAction {
+  EVENT_CREATED
+  EVENT_UPDATED
+  REGISTRATION_SUBMITTED
+  REGISTRATION_UPDATED
+  REGISTRATION_APPROVED
+  REGISTRATION_REJECTED
+  REGISTRATION_CANCELLED
+  REGISTRATION_WAITLISTED
+  WAITLIST_PROMOTED
+  TEAM_CREATED
+  TEAM_UPDATED
+  TEAM_APPROVED
+  TEAM_REJECTED
+  REGISTRATION_OPENED
+  REGISTRATION_CLOSED
+  CAPACITY_UPDATED
+}
+
+model Event {
+  id                   String        @id @default(cuid())
+  publicId             String        @unique @default(uuid())
+  name                 String
+  description          String
+  bannerUrl            String?
+  eventType            EventType     @default(CUSTOM)
+  status               EventStatus   @default(DRAFT)
+  playerCapacity       Int           @default(0)
+  teamCapacity         Int           @default(0)
+  teamSize             Int           @default(1)
+  registrationOpenAt   DateTime?
+  registrationDeadline DateTime?
+  eventStartAt         DateTime?
+  timezone             String        @default("UTC")
+  minecraftEdition    String[]      @default([])
+  minecraftVersions    String[]      @default([])
+  clients              String[]      @default([])
+  modLoaders           String[]      @default([])
+  rules                String[]      @default([])
+  documentationLinks   String[]      @default([])
+  registrationChannelId String?
+  reviewChannelId      String?
+  registeredPlayerChannelId String?
+  registeredTeamChannelId   String?
+  approvalRequired     Boolean       @default(true)
+  waitlistEnabled      Boolean       @default(true)
+  publicDisplay        Boolean       @default(true)
+  createdAt            DateTime      @default(now())
+  updatedAt            DateTime      @updatedAt
+
+  registrations Registration[]
+  teams        Team[]
+  auditLogs    AuditLog[]
+  notifications Notification[]
+}
+
+model Registration {
+  id                    String             @id @default(cuid())
+  registrationId        String             @unique
+  eventId               String
+  event                 Event              @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  discordUserId         String
+  discordUsername       String
+  minecraftUsername     String
+  minecraftVersion      String
+  client                String?
+  modLoader             String?
+  minecraftEdition      String?
+  additionalInformation String?
+  teamId                String?
+  team                  Team?              @relation(fields: [teamId], references: [id])
+  status                RegistrationStatus @default(PENDING)
+  waitlistPosition      Int?
+  approvalReason        String?
+  rejectionReason       String?
+  createdAt             DateTime           @default(now())
+  updatedAt             DateTime           @updatedAt
+  approvedAt            DateTime?
+  approvedBy            String?
+  cancelledAt           DateTime?
+  cancelledBy           String?
+
+  auditLogs             AuditLog[]
+  notifications         Notification[]
+  teamMember            TeamMember?
+
+  @@unique([eventId, discordUserId])
+  @@index([eventId, status])
+  @@index([discordUserId])
+  @@index([registrationId])
+}
+
+model Team {
+  id          String      @id @default(cuid())
+  eventId     String
+  event       Event       @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  name        String
+  captainId   String
+  status      String      @default("PENDING")
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  registrations Registration[]
+  members      TeamMember[]
+  auditLogs    AuditLog[]
+}
+
+model TeamMember {
+  id            String       @id @default(cuid())
+  teamId        String
+  team          Team         @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  registrationId String       @unique
+  registration  Registration @relation(fields: [registrationId], references: [id], onDelete: Cascade)
+  userDiscordId String
+  createdAt     DateTime     @default(now())
+
+  @@unique([teamId, userDiscordId])
+}
+
+model AuditLog {
+  id             String      @id @default(cuid())
+  eventId        String?
+  event          Event?      @relation(fields: [eventId], references: [id], onDelete: SetNull)
+  registrationId String?
+  registration   Registration? @relation(fields: [registrationId], references: [id], onDelete: SetNull)
+  teamId         String?
+  team           Team?       @relation(fields: [teamId], references: [id], onDelete: SetNull)
+  actorDiscordId String?
+  actorType      String      @default("USER")
+  action         AuditAction
+  previousState  String?
+  newState       String?
+  metadata       Json?
+  createdAt      DateTime    @default(now())
+
+  @@index([eventId])
+  @@index([registrationId])
+}
+
+model Notification {
+  id          String   @id @default(cuid())
+  eventId     String?
+  event       Event?   @relation(fields: [eventId], references: [id], onDelete: SetNull)
+  registrationId String?
+  registration Registration? @relation(fields: [registrationId], references: [id], onDelete: SetNull)
+  userDiscordId String
+  type        String
+  status      String   @default("PENDING")
+  dedupeKey   String?
+  payload     Json?
+  createdAt   DateTime @default(now())
+  sentAt      DateTime?
+
+  @@index([userDiscordId])
+  @@index([dedupeKey])
+}
